@@ -132,9 +132,9 @@ export function parseSber(text: string): ParsedTransaction[] {
     ) {
       results.push({
         date: dateStr,
-        category: "sale",
+        category: "transfer_info",
         amount: Math.abs(amount),
-        note: `Продажа крипты: ${chunk.replace(/\s+/g, " ").slice(0, 100)}`,
+        note: `Пополнение от Bank office: ${chunk.replace(/\s+/g, " ").slice(0, 80)}`,
       });
       continue;
     }
