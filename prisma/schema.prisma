@@ -1,0 +1,39 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Round {
+  id           String        @id @default(cuid())
+  createdAt    DateTime      @default(now())
+  files        File[]
+  transactions Transaction[]
+}
+
+model File {
+  id            String   @id @default(cuid())
+  roundId       String
+  round         Round    @relation(fields: [roundId], references: [id], onDelete: Cascade)
+  name          String
+  url           String
+  source        String
+  statementType String
+  createdAt     DateTime @default(now())
+}
+
+model Transaction {
+  id            String   @id @default(cuid())
+  roundId       String
+  round         Round    @relation(fields: [roundId], references: [id], onDelete: Cascade)
+  date          DateTime
+  source        String
+  statementType String
+  category      String
+  amount        Float
+  note          String?
+  createdAt     DateTime @default(now())
+}
