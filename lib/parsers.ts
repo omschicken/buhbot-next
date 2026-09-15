@@ -159,71 +159,57 @@ export function parseSber(text: string): ParsedTransaction[] {
 }
 
 // ---------------------------------------------------------------------------
-// Cifra Markets – helper to decode spaced-out text
-// ---------------------------------------------------------------------------
-
-function decodeCifra(raw: string): string {
-  // Attempt to remove inter-character spaces.
-  // Strategy: replace 1-space gaps between [a-яёА-ЯЁa-zA-Z0-9.,/\-:] pairs.
-  let s = raw;
-  for (let pass = 0; pass < 5; pass++) {
-    s = s.replace(/([\wа-яёА-ЯЁ.,/\-:])[ ]([\wа-яёА-ЯЁ.,/\-:])/g, "$1$2");
-  }
-  return s.replace(/\s{2,}/g, " ").trim();
-}
-
-// ---------------------------------------------------------------------------
 // Cifra Markets – Broker report (Отчёт брокера) and Depot report (Отчёт депозитария)
-// Both contain a trade section with columns:
-//   Тикер | ISIN | Рынок | Операция | Кол-во | Цена | Сумма | Комиссия | Дата | Расчёты | Номер сделки
+// unpdf returns clean text; no character-spacing decode needed.
+//
+// Broker row:  USDT-RUB.IMEX - IMEX Покупка 100 86.57 8 657.00RUR 129.86RUR 2026-09-07 ...
+// Depot row:   USDT- RUB.IMEX IMEX Покупка 100 86.57 8 657.00RUR 0.00 129.86RUR 2026-09-07 ...
 // ---------------------------------------------------------------------------
 
 export function parseCifra(text: string): ParsedTransaction[] {
   const results: ParsedTransaction[] = [];
+  const flat = text.replace(/\n/g, " ").replace(/\s{2,}/g, " ");
 
-  // Decode spaced characters
-  const decoded = decodeCifra(text);
-
-  // Find section boundaries
-  const tradesStart = Math.max(
-    decoded.indexOf("Исполненныесделки"),
-    decoded.indexOf("Сделки,заключённые"),
-    decoded.indexOf("Сделки,заключенные"),
-  );
-  if (tradesStart === -1) return results;
-
-  // Work with just the trades section
-  const tradesSection = decoded.slice(tradesStart);
-
-  // Each trade row looks like:
-  //   USDT-RUB.IMEX - IMEX Покупка 100 86.570000 8657.00RUR 129.86RUR 2026-09-07 16:56:23 2026-09-07 ...
-  // or in depot report:
-  //   USDT-RUB.IMEX IMEX Покупка 100.00000000 86.57000000 8657.00RUR 0.00 129.86RUR 2026-09-07 16:56:23 ...
-
-  // Regex: capture ticker, operation, amount (RUR), commission (RUR), date
+  // Match USDT-RUB trades (with optional space inside ticker, optional extra columns)
+  // Groups: (1) op  (2) sum RUR  (3) optional profit column  (4) commission RUR  (5) date
+  // Two-pass: find trade block then extract RUR amounts from it.
+  // Broker: TICKER OP QTY PRICE SUM_RUR COMM_RUR DATE
+  // Depot:  TICKER OP QTY PRICE SUM_RUR PROFIT COMM_RUR DATE
   const tradeRe =
-    /(USDT-RUB|RUB-USDT|USDT\/RUB)[\w.\-]*\s+[\w\-]*\s+(Покупка|Продажа)\s+[\d.,]+\s+[\d.,]+\s+([\d.,]+)\s*RUR\s+[\d.,]*\s*([\d.,]+)\s*RUR\s+(\d{4}-\d{2}-\d{2})/g;
+    /USDT.{0,3}RUB.*?(Покупка|Продажа)(.*?)(\d{4}-\d{2}-\d{2})/g;
 
   let m: RegExpExecArray | null;
-  while ((m = tradeRe.exec(tradesSection)) !== null) {
-    const op = m[2]; // Покупка | Продажа
-    const amountRur = parseFloat(m[3].replace(/\s/g, "").replace(",", "."));
-    const commissionRur = parseFloat(m[4].replace(/\s/g, "").replace(",", "."));
-    const dateStr = parseDate(m[5]);
+  while ((m = tradeRe.exec(flat)) !== null) {
+    const op = m[1];
+    const between = m[2];
+    const dateStr = parseDate(m[3]);
+
+    // RUR amounts always end with exactly 2 decimal places: " 8 657.00RUR"
+    // Pattern: space, digit, digit-or-space run (thousand sep), dot, 2 digits, RUR
+    const rurRe = / (\d[\d ]*\.\d{2})RUR/g;
+    const rurAmounts: number[] = [];
+    let rm: RegExpExecArray | null;
+    while ((rm = rurRe.exec(between)) !== null) {
+      const v = parseFloat(rm[1].replace(/\s/g, "").replace(",", "."));
+      if (v > 0) rurAmounts.push(v);
+    }
+    if (rurAmounts.length < 2) continue;
+    const amountRur = rurAmounts[0];
+    const commissionRur = rurAmounts[rurAmounts.length - 1];
 
     if (op === "Покупка" && amountRur > 0) {
       results.push({
         date: dateStr,
         category: "purchase",
         amount: amountRur,
-        note: `Покупка USDT-RUB Цифра Маркетс`,
+        note: "Покупка USDT-RUB Цифра Маркетс",
       });
       if (commissionRur > 0) {
         results.push({
           date: dateStr,
           category: "purchase_fee",
           amount: commissionRur,
-          note: `Комиссия за покупку USDT-RUB`,
+          note: "Комиссия за покупку USDT-RUB",
         });
       }
     } else if (op === "Продажа" && amountRur > 0) {
@@ -231,14 +217,14 @@ export function parseCifra(text: string): ParsedTransaction[] {
         date: dateStr,
         category: "sale",
         amount: amountRur,
-        note: `Продажа USDT-RUB Цифра Маркетс`,
+        note: "Продажа USDT-RUB Цифра Маркетс",
       });
       if (commissionRur > 0) {
         results.push({
           date: dateStr,
           category: "sale_fee",
           amount: commissionRur,
-          note: `Комиссия за продажу USDT-RUB`,
+          note: "Комиссия за продажу USDT-RUB",
         });
       }
     }
@@ -372,54 +358,60 @@ export function parseAbcexCrypto(text: string): ParsedTransaction[] {
 // Auto-detect source from text and dispatch to the right parser
 // ---------------------------------------------------------------------------
 
+export interface AutoParseResult {
+  transactions: ParsedTransaction[];
+  detectedSource: string;
+  detectedStatementType: string;
+}
+
 export function autoParseStatement(
   text: string,
   source: string,
   statementType: string
-): ParsedTransaction[] | null {
+): AutoParseResult | null {
   const t = text.toLowerCase();
 
-  // Sberbank statement
+  // Text-based detection takes priority over user-selected source
   if (
-    source === "sber" ||
     t.includes("сбербанк") ||
     t.includes("sberbank") ||
     t.includes("выписка по платёжному счёту") ||
-    t.includes("выписка по платежному счету")
+    t.includes("выписка по платежному счету") ||
+    source === "sber"
   ) {
-    return parseSber(text);
+    return { transactions: parseSber(text), detectedSource: "sber", detectedStatementType: "account" };
   }
 
-  // Cifra Markets
   if (
-    source === "cifra" ||
-    t.includes("цифра маркетс") ||
     t.includes("cifra") ||
+    t.includes("цифра маркетс") ||
+    t.includes("цифра брокер") ||
     t.includes("отчет депозитария") ||
     t.includes("отчёт депозитария") ||
     t.includes("отчет брокера") ||
-    t.includes("отчёт брокера")
+    t.includes("отчёт брокера") ||
+    source === "cifra"
   ) {
-    return parseCifra(text);
+    const stType = t.includes("депозитари") ? "depot" : "broker";
+    return { transactions: parseCifra(text), detectedSource: "cifra", detectedStatementType: stType };
   }
 
-  // ABCEX – orders report (main income source from ABCEX)
-  if (
-    source === "abcex" ||
-    (t.includes("abcex") && t.includes("выписка по ордерам"))
-  ) {
-    return parseAbcexOrders(text);
+  if (t.includes("abcex") && t.includes("выписка по ордерам")) {
+    return { transactions: parseAbcexOrders(text), detectedSource: "abcex", detectedStatementType: "orders" };
   }
 
-  // ABCEX – fiat operations (RUB cash withdrawals, reference)
   if (t.includes("abcex") && t.includes("выписка фиатных операций")) {
-    return parseAbcexFiat(text);
+    return { transactions: parseAbcexFiat(text), detectedSource: "abcex", detectedStatementType: "fiat" };
   }
 
-  // ABCEX – crypto operations (USDT deposits, reference)
   if (t.includes("abcex") && t.includes("выписка криптовалютных операций")) {
-    return parseAbcexCrypto(text);
+    return { transactions: parseAbcexCrypto(text), detectedSource: "abcex", detectedStatementType: "crypto" };
   }
 
-  return null; // Unknown format – fall back to manual entry
+  // source param as fallback
+  if (source === "abcex") {
+    return { transactions: parseAbcexOrders(text), detectedSource: "abcex", detectedStatementType: statementType };
+  }
+
+  return null;
 }

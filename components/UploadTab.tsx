@@ -117,11 +117,13 @@ export default function UploadTab({ pendingFiles, setPendingFiles, onAddTransact
       const preview: PdfPreview = { text: data.text, pages: data.pages, file: pf, parsed: data.parsed ?? null };
       setPdfPreview(preview);
       if (data.parsed && data.parsed.length > 0) {
-        // Pre-fill rows from auto-parse
+        // Use auto-detected source/type if available, otherwise fall back to user selection
+        const rowSource = data.detectedSource || source;
+        const rowStatementType = data.detectedStatementType || statementType;
         setPdfRows(data.parsed.map((p: AutoParsedTx) => ({
           date: p.date.slice(0, 10),
-          source,
-          statementType,
+          source: rowSource,
+          statementType: rowStatementType,
           category: p.category,
           amount: p.amount,
           note: p.note,

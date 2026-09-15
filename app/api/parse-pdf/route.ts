@@ -19,9 +19,15 @@ export async function POST(req: NextRequest) {
 
     const { text, totalPages } = await extractText(buffer, { mergePages: true });
 
-    const parsed = autoParseStatement(text, source, statementType);
+    const result = autoParseStatement(text, source, statementType);
 
-    return NextResponse.json({ text, pages: totalPages, parsed });
+    return NextResponse.json({
+      text,
+      pages: totalPages,
+      parsed: result?.transactions ?? null,
+      detectedSource: result?.detectedSource ?? null,
+      detectedStatementType: result?.detectedStatementType ?? null,
+    });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }
