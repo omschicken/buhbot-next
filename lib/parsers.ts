@@ -70,91 +70,80 @@ function parseDate(s: string): string {
 export function parseSber(text: string): ParsedTransaction[] {
   const results: ParsedTransaction[] = [];
 
-  // Normalise: collapse page headers / footers and multiple spaces
-  const cleaned = text
-    .replace(/Выписка по платёжному счёту[\s\S]*?Страница \d+ из \d+/g, " ")
+  // unpdf returns text as a single string without newlines between records.
+  // Strategy: split on each operation date+time boundary, then process each chunk.
+  const flat = text
+    .replace(/Выписка по платёжному счёту[^]*?Страница \d+ из \d+/g, " ")
     .replace(/Продолжение на следующей странице/g, " ")
-    .replace(/---page---/g, " ")
-    .replace(/ {2,}/g, "  ");
+    .replace(/\n/g, " ")
+    .replace(/\s{2,}/g, " ");
 
-  // Split into lines; keep blank lines so we can group 3-line records
-  const lines = cleaned.split(/\n/).map((l) => l.trim()).filter(Boolean);
+  // Each record starts with "DD.MM.YYYY HH:MM"
+  // Split text into chunks by that pattern, keeping the delimiter in each chunk
+  const chunkRe = /\d{2}\.\d{2}\.\d{4}\s+\d{2}:\d{2}/g;
+  const positions: number[] = [];
+  let cm: RegExpExecArray | null;
+  while ((cm = chunkRe.exec(flat)) !== null) {
+    positions.push(cm.index);
+  }
 
-  // We'll use a sliding window: look for "date time" pattern at start of line
-  const dateTimeRe = /^(\d{2}\.\d{2}\.\d{4})\s+(\d{2}:\d{2})/;
-  const amountRe = /([+\-]?[\d\s]+[,\.]\d{2})\s+([\d\s]+[,\.]\d{2})\s*$/;
+  for (let pi = 0; pi < positions.length; pi++) {
+    const start = positions[pi];
+    const end = positions[pi + 1] ?? flat.length;
+    const chunk = flat.slice(start, end).trim();
 
-  let i = 0;
-  while (i < lines.length) {
-    const lineA = lines[i];
-    if (!dateTimeRe.test(lineA)) { i++; continue; }
+    const dateMatch = chunk.match(/^(\d{2}\.\d{2}\.\d{4})/);
+    if (!dateMatch) continue;
+    const dateStr = parseDate(dateMatch[1]);
 
-    const dateMatch = lineA.match(/^(\d{2}\.\d{2}\.\d{4})/);
-    const dateStr = dateMatch ? parseDate(dateMatch[1]) : new Date().toISOString();
-
-    // Amount is the first number before the balance at end of line
-    const amountMatch = lineA.match(/([+\-]?[\d\s]+[,]\d{2})\s+([\d\s]+[,]\d{2})\s*$/);
+    // Amount: first pair of "±N NNN,NN  N NNN,NN" after the time (amount then balance)
+    const amountMatch = chunk.match(/([+\-]?[\d ]+,\d{2})\s+[\d ]+,\d{2}/);
     const amountRaw = amountMatch ? amountMatch[1] : "0";
     const amount = parseRuAmount(amountRaw);
-    const isCredit = amountRaw.startsWith("+");
+    const isCredit = amountRaw.trimStart().startsWith("+");
 
-    // Next line should be description
-    const lineB = lines[i + 1] || "";
-    const lineC = lines[i + 2] || "";
+    const lower = chunk.toLowerCase();
 
-    const desc = lineB.toLowerCase();
-    const category_line = lineA.toLowerCase();
-
-    // ── P2P swift transfers ──────────────────────────────────────────────
-    if (desc.includes("sberbank-p2p-swift")) {
-      // Add transfer_info for the full transfer amount
+    // ── P2P swift transfer ───────────────────────────────────────────────
+    if (lower.includes("sberbank-p2p-swift")) {
       results.push({
         date: dateStr,
         category: "transfer_info",
         amount: Math.abs(amount),
-        note: lineB.replace(/\s+/g, " ").trim(),
+        note: chunk.replace(/\s+/g, " ").slice(0, 120),
       });
-
-      // Check for embedded commission on line C or B
-      const commText = lineC.includes("комиссия") ? lineC : lineB.includes("комиссия") ? lineB : "";
-      if (commText) {
-        const commMatch = commText.match(/([\d\s]+[,\.]\d{2})\s*руб/);
-        if (commMatch) {
-          results.push({
-            date: dateStr,
-            category: "transfer_fee",
-            amount: parseRuAmount(commMatch[1]),
-            note: `Комиссия перевода (${lineB.replace(/\s+/g, " ").trim().slice(0, 60)})`,
-          });
-        }
+      const commMatch = chunk.match(/комиссия\s+([\d\s]+[,\.]\d{2})\s*руб/i);
+      if (commMatch) {
+        results.push({
+          date: dateStr,
+          category: "transfer_fee",
+          amount: parseRuAmount(commMatch[1]),
+          note: `Комиссия перевода p2p-swift`,
+        });
       }
-      i++;
       continue;
     }
 
-    // ── Crypto sale proceeds: incoming "Перевод на карту" from Bank office ──
+    // ── Crypto sale proceeds ─────────────────────────────────────────────
     if (
       isCredit &&
-      (category_line.includes("перевод на карту") || category_line.includes("перевод на счёт")) &&
-      (desc.includes("bank office") || desc.includes("office"))
+      (lower.includes("перевод на карту") || lower.includes("перевод на счёт")) &&
+      lower.includes("bank office")
     ) {
       results.push({
         date: dateStr,
         category: "sale",
         amount: Math.abs(amount),
-        note: `Продажа крипты: ${lineB.replace(/\s+/g, " ").trim().slice(0, 80)}`,
+        note: `Продажа крипты: ${chunk.replace(/\s+/g, " ").slice(0, 100)}`,
       });
-      i++;
       continue;
     }
 
-    // ── Subscription: "Премиальное обслуживание" ──────────────────────────
+    // ── Subscription ─────────────────────────────────────────────────────
     if (
-      category_line.includes("премиальное обслуживание") ||
-      desc.includes("премиальное обслуживание") ||
-      category_line.includes("сберпервый") ||
-      desc.includes("сберпервый") ||
-      desc.includes("prime")
+      lower.includes("премиальное обслуживание") ||
+      lower.includes("сберпервый") ||
+      lower.includes("prime")
     ) {
       results.push({
         date: dateStr,
@@ -162,11 +151,8 @@ export function parseSber(text: string): ParsedTransaction[] {
         amount: Math.abs(amount),
         note: "Подписка СберПервый",
       });
-      i++;
       continue;
     }
-
-    i++;
   }
 
   return results;
