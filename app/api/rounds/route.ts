@@ -50,7 +50,7 @@ export async function POST(req: NextRequest) {
           const blob = await put(
             `rounds/${round.id}/${meta.name}`,
             await fileField.arrayBuffer(),
-            { access: "public", token: blobToken }
+            { access: "private", token: blobToken }
           );
           uploadedFiles.push({
             roundId: round.id,
