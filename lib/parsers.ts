@@ -73,7 +73,6 @@ export function parseSber(text: string): ParsedTransaction[] {
   // unpdf returns text as a single string without newlines between records.
   // Strategy: split on each operation date+time boundary, then process each chunk.
   const flat = text
-    .replace(/Выписка по платёжному счёту[^]*?Страница \d+ из \d+/g, " ")
     .replace(/Продолжение на следующей странице/g, " ")
     .replace(/\n/g, " ")
     .replace(/\s{2,}/g, " ");
