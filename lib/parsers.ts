@@ -165,37 +165,75 @@ export function parseSber(text: string): ParsedTransaction[] {
 // Depot row:   USDT- RUB.IMEX IMEX Покупка 100 86.57 8 657.00RUR 0.00 129.86RUR 2026-09-07 ...
 // ---------------------------------------------------------------------------
 
+function extractCifraRate(flat: string): number {
+  const m = flat.match(/USDT\/RUR\s+([\d.]+)/);
+  return m ? parseFloat(m[1]) : 90;
+}
+
+// RUR amounts always end with exactly 2 decimal places: " 8 657.00RUR"
+function extractRurAmounts(s: string): number[] {
+  const amounts: number[] = [];
+  const rurRe = / (\d[\d ]*\.\d{2})RUR/g;
+  let rm: RegExpExecArray | null;
+  while ((rm = rurRe.exec(s)) !== null) {
+    const v = parseFloat(rm[1].replace(/\s/g, ""));
+    if (v > 0) amounts.push(v);
+  }
+  return amounts;
+}
+
+// ---------------------------------------------------------------------------
+// Cifra Broker (Отчёт брокера) – парсит БАНКОВСКИЕ ПЕРЕВОДЫ как себестоимость.
+// Сделки намеренно не парсятся: они дублируются в depot-выписке.
+// ---------------------------------------------------------------------------
+export function parseCifraBroker(text: string): ParsedTransaction[] {
+  const results: ParsedTransaction[] = [];
+  const flat = text.replace(/\n/g, " ").replace(/\s{2,}/g, " ");
+  const usdtRate = extractCifraRate(flat);
+
+  // Банковские переводы = реальные рублёвые расходы (пополнение счёта)
+  // "Банковский перевод 2026-09-01 торговый 600 000.00 RUR Пополнение..."
+  // "Банковский перевод 2026-09-14 Неподтвержденные средства 2 960 000.00 RUR Пополнение..."
+  const depositRe =
+    /Банковский перевод\s+(\d{4}-\d{2}-\d{2})\s+(?:торговый|Неподтвержденные средства)\s+([\d ]+\.\d{2})\s+RUR\s+Пополнение/g;
+  let m: RegExpExecArray | null;
+  while ((m = depositRe.exec(flat)) !== null) {
+    const dateStr = parseDate(m[1]);
+    const amount = parseFloat(m[2].replace(/ /g, ""));
+    if (amount > 0)
+      results.push({ date: dateStr, category: "purchase", amount, note: "Пополнение счёта Цифра Маркетс" });
+  }
+
+  // Комиссия вывода USDT ($10 за каждый вывод)
+  const withdrawRe =
+    /Вывод криптовалюты\s+(\d{4}-\d{2}-\d{2})\s+торговый\s+([-\d .,]+)\s*USDT/g;
+  while ((m = withdrawRe.exec(flat)) !== null) {
+    const dateStr = parseDate(m[1]);
+    const feeRur = Math.round(10 * usdtRate * 100) / 100;
+    results.push({
+      date: dateStr,
+      category: "transfer_fee",
+      amount: feeRur,
+      note: `Комиссия вывода USDT с Цифры (10 USDT × ${usdtRate})`,
+    });
+  }
+
+  return results;
+}
+
+// ---------------------------------------------------------------------------
+// Cifra Depot (Отчёт депозитария) – сделки USDT-RUB идут как справочные
+// (transfer_info), т.к. себестоимость уже захвачена в broker-выписке.
+// TRX/SOL остаются реальными расходами.
+// ---------------------------------------------------------------------------
 export function parseCifra(text: string): ParsedTransaction[] {
   const results: ParsedTransaction[] = [];
   const flat = text.replace(/\n/g, " ").replace(/\s{2,}/g, " ");
+  const usdtRate = extractCifraRate(flat);
 
-  // Match USDT-RUB trades (with optional space inside ticker, optional extra columns)
-  // Groups: (1) op  (2) sum RUR  (3) optional profit column  (4) commission RUR  (5) date
-  // Extract USDT/RUR rate from report header for converting USDT-denominated trades
-  const rateMatch = flat.match(/USDT\/RUR\s+([\d.]+)/);
-  const usdtRate = rateMatch ? parseFloat(rateMatch[1]) : 90;
-
-  // ── USDT-RUB trades (main arbitrage) ───────────────────────────────────
-  // Two-pass: find trade block then extract RUR amounts from it.
-  // Broker: TICKER OP QTY PRICE SUM_RUR COMM_RUR DATE
-  // Depot:  TICKER OP QTY PRICE SUM_RUR PROFIT COMM_RUR DATE
+  // ── USDT-RUB trades → справочно (не влияют на P&L) ─────────────────────
   const tradeRe =
     /USDT.{0,3}RUB.*?(Покупка|Продажа)(.*?)(\d{4}-\d{2}-\d{2})/g;
-
-  // RUR amounts always end with exactly 2 decimal places: " 8 657.00RUR"
-  const rurRe = / (\d[\d ]*\.\d{2})RUR/g;
-
-  function extractRurAmounts(s: string): number[] {
-    const amounts: number[] = [];
-    let rm: RegExpExecArray | null;
-    rurRe.lastIndex = 0;
-    while ((rm = rurRe.exec(s)) !== null) {
-      const v = parseFloat(rm[1].replace(/\s/g, "").replace(",", "."));
-      if (v > 0) amounts.push(v);
-    }
-    return amounts;
-  }
-
   let m: RegExpExecArray | null;
   while ((m = tradeRe.exec(flat)) !== null) {
     const op = m[1];
@@ -208,16 +246,15 @@ export function parseCifra(text: string): ParsedTransaction[] {
     const commissionRur = rurAmounts[rurAmounts.length - 1];
 
     if (op === "Покупка" && amountRur > 0) {
-      results.push({ date: dateStr, category: "purchase", amount: amountRur, note: "Покупка USDT-RUB Цифра Маркетс" });
-      if (commissionRur > 0) results.push({ date: dateStr, category: "purchase_fee", amount: commissionRur, note: "Комиссия за покупку USDT-RUB" });
+      results.push({ date: dateStr, category: "transfer_info", amount: amountRur, note: "Покупка USDT-RUB Цифра (справочно)" });
+      if (commissionRur > 0) results.push({ date: dateStr, category: "transfer_info", amount: commissionRur, note: "Комиссия покупки USDT-RUB (справочно)" });
     } else if (op === "Продажа" && amountRur > 0) {
-      results.push({ date: dateStr, category: "sale", amount: amountRur, note: "Продажа USDT-RUB Цифра Маркетс" });
-      if (commissionRur > 0) results.push({ date: dateStr, category: "sale_fee", amount: commissionRur, note: "Комиссия за продажу USDT-RUB" });
+      results.push({ date: dateStr, category: "transfer_info", amount: amountRur, note: "Продажа USDT-RUB Цифра (справочно)" });
+      if (commissionRur > 0) results.push({ date: dateStr, category: "transfer_info", amount: commissionRur, note: "Комиссия продажи USDT-RUB (справочно)" });
     }
   }
 
-  // ── TRX / SOL / other USDT-denominated purchases (расходы) ─────────────
-  // Format: TICKER - IMEX Покупка QTY PRICE AMOUNT_USDT COMM_RUR DATE
+  // ── TRX / SOL / other alt purchases = реальные расходы ─────────────────
   const altTradeRe =
     /(TRX|SOL|[\w]+)-USDT[\w.\- ]*?(Покупка|Продажа)\s+[\d.,]+\s+[\d.,]+\s+([\d.,]+)USDT\s+([\d.,]+)RUR\s+(\d{4}-\d{2}-\d{2})/g;
   while ((m = altTradeRe.exec(flat)) !== null) {
@@ -232,20 +269,6 @@ export function parseCifra(text: string): ParsedTransaction[] {
       results.push({ date: dateStr, category: "purchase", amount: amountRur, note: `Покупка ${ticker} (${amountUsdt} USDT × ${usdtRate}) Цифра Маркетс` });
       if (commRur > 0) results.push({ date: dateStr, category: "purchase_fee", amount: commRur, note: `Комиссия за покупку ${ticker}` });
     }
-  }
-
-  // ── USDT withdrawal fee $10 per transfer ───────────────────────────────
-  const withdrawRe =
-    /Вывод криптовалюты\s+(\d{4}-\d{2}-\d{2})\s+\S+\s+([-\d .,]+)\s*USDT/g;
-  while ((m = withdrawRe.exec(flat)) !== null) {
-    const dateStr = parseDate(m[1]);
-    const feeRur = Math.round(10 * usdtRate * 100) / 100;
-    results.push({
-      date: dateStr,
-      category: "transfer_fee",
-      amount: feeRur,
-      note: `Комиссия вывода USDT с Цифры (10 USDT × ${usdtRate})`,
-    });
   }
 
   return results;
@@ -411,7 +434,8 @@ export function autoParseStatement(
     source === "cifra"
   ) {
     const stType = t.includes("депозитари") ? "depot" : "broker";
-    return { transactions: parseCifra(text), detectedSource: "cifra", detectedStatementType: stType };
+    const txns = stType === "broker" ? parseCifraBroker(text) : parseCifra(text);
+    return { transactions: txns, detectedSource: "cifra", detectedStatementType: stType };
   }
 
   if (t.includes("abcex") && t.includes("выписка по ордерам")) {
