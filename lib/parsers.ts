@@ -301,20 +301,13 @@ export function parseAbcexOrders(text: string): ParsedTransaction[] {
     const commissionRub = parseFloat(m[6].replace(",", "."));
 
     if (direction === "Продать" && receivedRub > 0) {
+      // receivedRub = нетто (комиссия уже вычтена), не добавляем sale_fee отдельно
       results.push({
         date: dateStr,
         category: "sale",
         amount: receivedRub,
         note: "Продажа USDT на ABCEX",
       });
-      if (commissionRub > 0) {
-        results.push({
-          date: dateStr,
-          category: "sale_fee",
-          amount: commissionRub,
-          note: "Комиссия ABCEX за продажу",
-        });
-      }
     } else if (direction === "Купить" && receivedRub > 0) {
       results.push({
         date: dateStr,
@@ -322,14 +315,6 @@ export function parseAbcexOrders(text: string): ParsedTransaction[] {
         amount: receivedRub,
         note: "Покупка USDT на ABCEX",
       });
-      if (commissionRub > 0) {
-        results.push({
-          date: dateStr,
-          category: "purchase_fee",
-          amount: commissionRub,
-          note: "Комиссия ABCEX за покупку",
-        });
-      }
     }
   }
 
