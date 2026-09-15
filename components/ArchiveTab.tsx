@@ -165,7 +165,7 @@ export default function ArchiveTab({ refreshKey }: Props) {
                         <span style={{ fontSize: 13, flex: 1 }}>{f.name}</span>
                         <span style={{ fontSize: 12, color: "var(--text2)" }}>{srcMap[f.source] || f.source}</span>
                         {f.url ? (
-                          <a href={f.url} download target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent)", fontSize: 12, textDecoration: "none" }}>
+                          <a href={`/api/rounds/${round.id}/file/${f.id}`} download style={{ color: "var(--accent)", fontSize: 12, textDecoration: "none" }}>
                             ⬇ Скачать
                           </a>
                         ) : (
